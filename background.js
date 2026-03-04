@@ -150,22 +150,40 @@ const calibrate = async (tabId) => {
     publishStatus();
 };
 
-const blockedBy = async (regex, tabId, votes = 3) => {
+// Adaptive voting: accept a clear result on the first probe, only
+// take additional votes when the timing falls in the ambiguous band
+// around the threshold (±AMBIG_FACTOR × threshold).
+const AMBIG_FACTOR = 0.4;  // band = threshold × [1-f … 1+f]
+const MAX_VOTES    = 3;
+
+const blockedBy = async (regex, tabId) => {
     if (abortLeak) return false;
     await setBlock(regex);
+
+    const lo = blockThreshold * (1 - AMBIG_FACTOR);
+    const hi = blockThreshold * (1 + AMBIG_FACTOR);
+
     let blocks = 0;
-    for (let i = 0; i < votes; i++) {
+    let votes  = 0;
+
+    for (let i = 0; i < MAX_VOTES; i++) {
         if (abortLeak) return false;
         const t = await reloadTab(tabId);
         if (t === null) return false; // aborted
+        votes++;
         const hit = t < blockThreshold;
-        console.log(`[t${i+1}/${votes}] ${Math.round(t)}ms ${hit ? "BLOCK" : "ALLOW"} ...${regex.slice(-30)}`);
+        console.log(`[t${votes}] ${Math.round(t)}ms ${hit ? "BLOCK" : "ALLOW"} ...${regex.slice(-30)}`);
         if (hit) blocks++;
-        // Early exit if majority already determined
-        if (blocks > votes / 2) return true;
-        if ((votes - i - 1 + blocks) <= votes / 2) return false;
+
+        // Clear result: timing is outside the ambiguous band → trust it immediately
+        if (t < lo) return true;   // unambiguously blocked
+        if (t > hi) return false;  // unambiguously allowed
+
+        // Still in ambiguous band — keep voting; use early-exit if majority is settled
+        if (blocks > MAX_VOTES / 2) return true;
+        if ((MAX_VOTES - i - 1 + blocks) <= MAX_VOTES / 2) return false;
     }
-    return blocks > votes / 2;
+    return blocks > MAX_VOTES / 2;
 };
 
 // ─── Leak logic ───
