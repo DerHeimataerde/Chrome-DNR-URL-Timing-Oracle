@@ -113,7 +113,7 @@ npm start
 ```
 
 Server runs on `http://localhost:3000`.  
-Dashboard: `http://localhost:3000/dashboard.html`
+Dashboard: `http://localhost:3000`
 
 ### 2. Load the extension
 
@@ -138,7 +138,7 @@ Dashboard: `http://localhost:3000/dashboard.html`
 [*] Tab 123 leaked: https://accounts.google.com/callback?code=s3cr3t
 ```
 
-- Check the dashboard at `http://localhost:3000/dashboard.html` for the full IP-grouped profile
+- Check the dashboard at `http://localhost:3000` for the full IP-grouped profile
 
 ---
 
