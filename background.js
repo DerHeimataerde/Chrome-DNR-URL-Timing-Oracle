@@ -150,14 +150,22 @@ const calibrate = async (tabId) => {
     publishStatus();
 };
 
-const blockedBy = async (regex, tabId) => {
+const blockedBy = async (regex, tabId, votes = 3) => {
     if (abortLeak) return false;
     await setBlock(regex);
-    const t = await reloadTab(tabId);
-    if (t === null) return false; // aborted
-    const hit = t < blockThreshold;
-    console.log(`[t] ${Math.round(t)}ms ${hit ? "BLOCK" : "ALLOW"} ...${regex.slice(-30)}`);
-    return hit;
+    let blocks = 0;
+    for (let i = 0; i < votes; i++) {
+        if (abortLeak) return false;
+        const t = await reloadTab(tabId);
+        if (t === null) return false; // aborted
+        const hit = t < blockThreshold;
+        console.log(`[t${i+1}/${votes}] ${Math.round(t)}ms ${hit ? "BLOCK" : "ALLOW"} ...${regex.slice(-30)}`);
+        if (hit) blocks++;
+        // Early exit if majority already determined
+        if (blocks > votes / 2) return true;
+        if ((votes - i - 1 + blocks) <= votes / 2) return false;
+    }
+    return blocks > votes / 2;
 };
 
 // ─── Leak logic ───
