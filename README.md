@@ -62,17 +62,21 @@ The attack can be made completely silent by running against background tabs, req
 
 ```
 .
+├── .gitignore
 ├── manifest.json        # Extension manifest (MV3)
 ├── background.js        # Service worker — timing oracle, leak engine, encryption
-├── jszip.min.js         # (removed — replaced by native Web Crypto)
+├── popup.html           # Extension popup UI
+├── popup.js             # Popup logic — start/pause, live status, server config
+├── issue.md             # Chromium bug report draft
 ├── demo/
 │   └── index.html       # PoC demo/explainer page
 └── server/
-    ├── server.js         # Express collection server with IP profiling
+    ├── server.js        # Express collection server with IP profiling
     ├── package.json
-    ├── profiles.json     # Persisted IP profiles (created on first upload)
+    ├── profiles.json    # Persisted IP profiles — created on first upload (gitignored)
+    ├── uploads/         # Raw upload staging directory
     └── public/
-        └── dashboard.html  # Live dashboard — profiles by IP
+        └── dashboard.html  # Live dashboard — profiles by IP, with clear controls
 ```
 
 ---
