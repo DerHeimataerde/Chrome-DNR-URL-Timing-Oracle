@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CVE PoC — DNR URL Leak</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: monospace; background: #0d0d0d; color: #c9d1d9; padding: 2rem; }
+    h1 { color: #f85149; margin-bottom: 0.4rem; }
+    .tag { display: inline-block; background: #f85149; color: #fff; font-size: 0.7rem;
+           padding: 0.1rem 0.5rem; border-radius: 3px; margin-bottom: 1.5rem; }
+    section { background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+              padding: 1.25rem; margin-bottom: 1.5rem; }
+    h2 { color: #f0883e; margin-bottom: 0.75rem; font-size: 1rem; }
+    p  { color: #8b949e; line-height: 1.6; font-size: 0.875rem; }
+    ol { color: #8b949e; line-height: 2; font-size: 0.875rem; padding-left: 1.25rem; }
+    ol li span { color: #79c0ff; }
+    code { background: #21262d; padding: 0.1rem 0.4rem; border-radius: 3px;
+           color: #ff7b72; font-size: 0.85rem; }
+    .steps span { color: #3fb950; }
+    a { color: #79c0ff; }
+    .note { background: #1c2128; border-left: 3px solid #f0883e;
+            padding: 0.75rem 1rem; border-radius: 0 4px 4px 0;
+            color: #8b949e; font-size: 0.82rem; margin-top: 1rem; }
+    .perms { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.5rem; }
+    .perm  { background: #1f6feb22; border: 1px solid #1f6feb; color: #79c0ff;
+             font-size: 0.78rem; padding: 0.2rem 0.6rem; border-radius: 12px; }
+  </style>
+</head>
+<body>
+
+  <h1>declarativeNetRequest — URL Timing Oracle</h1>
+  <span class="tag">PROOF OF CONCEPT</span>
+
+  <section>
+    <h2>Vulnerability Summary</h2>
+    <p>
+      A Chrome extension holding only the <code>declarativeNetRequest</code> and
+      <code>storage</code> permissions can silently leak the full URL of any open tab
+      by exploiting the measurable timing difference between a blocked request
+      (<code>net::ERR_BLOCKED_BY_CLIENT</code>, ~10–30 ms) and an allowed request
+      (~50–100 ms+). A binary search over the character set resolves each character
+      in O(log n) iterations.
+    </p>
+    <div class="note">
+      Affected versions: Chrome 144.0.7559.97 (Stable) through 146.0.7653.0 (Canary)
+      on Windows 11 24H2. Regression introduced in the commit enabling regex rule
+      evaluation for dynamic rules.
+    </div>
+  </section>
+
+  <section>
+    <h2>Extension Permissions Used</h2>
+    <div class="perms">
+      <span class="perm">declarativeNetRequest</span>
+      <span class="perm">storage</span>
+    </div>
+    <p style="margin-top:0.75rem">
+      No <code>tabs</code>, no <code>host_permissions</code>, no user interaction required.
+    </p>
+  </section>
+
+  <section>
+    <h2>How It Works</h2>
+    <ol>
+      <li>Extension sets a dynamic DNR blocking rule with a <span>regex pattern</span> targeting a character subset at position <em>i</em> of the URL.</li>
+      <li>Calls <code>chrome.tabs.reload</code> and starts a <span>high-resolution timer</span>.</li>
+      <li>Listens for <code>chrome.tabs.onUpdated</code> <code>status === "complete"</code>.</li>
+      <li>If elapsed time &lt; threshold → URL matches → character is in the <span>left half</span> of the search set.</li>
+      <li>Repeat binary search until the character is resolved, then advance to position <em>i+1</em>.</li>
+      <li>Leaked URL is saved to <code>chrome.storage.local</code> and <span>zipped + POSTed</span> to the collection server.</li>
+    </ol>
+  </section>
+
+  <section class="steps">
+    <h2>Reproduction Steps</h2>
+    <ol>
+      <li>Start the collection server: <code>cd server &amp;&amp; npm i &amp;&amp; npm start</code></li>
+      <li>Open a target URL (e.g. <code>https://accounts.google.com/callback?code=secret</code>) in a tab and move it to <span>position 1</span>.</li>
+      <li>Load the unpacked extension from this directory in Chrome (<code>chrome://extensions</code> → Developer mode → Load unpacked).</li>
+      <li>Open the extension's <span>service worker DevTools</span> and watch the console.</li>
+      <li>Visit the <a href="http://localhost:3000/dashboard.html" target="_blank">collection dashboard</a> to see the exfiltrated URL.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Impact</h2>
+    <p>
+      OAuth tokens · session tokens · password-reset links · private share URLs ·
+      sensitive search queries — any secret embedded in a URL is silently exfiltrated
+      with zero user interaction and no visible UI indicator.
+    </p>
+  </section>
+
+</body>
+</html>

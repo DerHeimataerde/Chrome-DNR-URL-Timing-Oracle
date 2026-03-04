@@ -1,0 +1,13 @@
+{
+  "name": "exfil-server",
+  "version": "1.0.0",
+  "description": "PoC server to collect exfiltrated URL data from Chrome extension",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5"
+  }
+}

