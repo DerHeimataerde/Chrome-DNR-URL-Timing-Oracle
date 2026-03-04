@@ -15,6 +15,8 @@
       padding: 0.4rem 1rem; cursor: pointer; border-radius: 4px; font-family: monospace;
     }
     button:hover { background: #30363d; }
+    #clearBtn { background: #6e1a1a; border-color: #f85149; color: #f85149; }
+    #clearBtn:hover { background: #8a2020; }
     #status { font-size: 0.8rem; color: #8b949e; }
     .profile {
       background: #161b22; border: 1px solid #30363d;
@@ -61,6 +63,7 @@
     <button onclick="stopAuto()">&#x25A0; Stop</button>
     <button onclick="expandAll()">&#x25BC; Expand all</button>
     <button onclick="collapseAll()">&#x25B6; Collapse all</button>
+    <button id="clearBtn" onclick="clearAll()">&#x1F5D1; Clear All</button>
     <span id="status">Idle</span>
   </div>
   <div id="output"><p class="empty">No data received yet.</p></div>
@@ -68,6 +71,19 @@
   <script>
     let autoTimer = null;
 
+    async function clearAll() {
+      if (!confirm("Delete ALL collected profiles and URLs? This cannot be undone.")) return;
+      try {
+        const res = await fetch("/profiles", { method: "DELETE" });
+        const data = await res.json();
+        if (data.ok) {
+          render({});
+          document.getElementById("status").textContent = "All profiles cleared.";
+        }
+      } catch (e) {
+        document.getElementById("status").textContent = "Error: " + e.message;
+      }
+    }
     async function refresh() {
       document.getElementById("status").textContent = "Fetching...";
       try {
