@@ -2,7 +2,7 @@
 
 > **Research purposes only.** This repository demonstrates a browser vulnerability for responsible disclosure and academic study.
 
-A proof-of-concept Chrome extension that silently leaks the full URL of background tabs using only the `declarativeNetRequest` and `storage` permissions — no `tabs` permission, no host permissions, no user interaction.
+A proof-of-concept Chrome extension that silently leaks the full URL of background tabs using **only the `declarativeNetRequest` permission** as the timing oracle — no `tabs` permission, no host permissions, no user interaction. The `storage` permission is used solely for auxiliary state (caching results, persisting configuration) and plays no role in the URL leak itself.
 
 ---
 
@@ -142,8 +142,8 @@ Dashboard: `http://localhost:3000/dashboard.html`
 
 | Permission | Purpose |
 |---|---|
-| `declarativeNetRequest` | Set/clear blocking rules for the timing oracle |
-| `storage` | Cache leaked URLs locally between service worker restarts |
+| `declarativeNetRequest` | **The sole mechanism of the URL leak** — set/clear regex blocking rules to distinguish blocked (~1–5 ms) from allowed (~50 ms+) navigations |
+| `storage` | Auxiliary only — cache results and persist configuration between service worker restarts; not involved in URL inference |
 
 No `tabs`, no `host_permissions`, no `webRequest`.
 
