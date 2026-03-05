@@ -52,6 +52,17 @@
     }
     .empty { color: #8b949e; text-align: center; padding: 3rem; }
     .collapsed .profile-body { display: none; }
+    .url-detail { margin-top: 5px; padding: 5px 8px; background: #0d1117; border-left: 2px solid #30363d; font-size: 0.75rem; line-height: 1.8; }
+    .detail-row { display: flex; gap: 0.5rem; align-items: baseline; flex-wrap: wrap; }
+    .detail-key { color: #8b949e; flex-shrink: 0; min-width: 80px; }
+    .detail-val { color: #c9d1d9; word-break: break-all; }
+    .detail-val.path     { color: #d2a8ff; }
+    .detail-val.fragment { color: #ffa657; }
+    .token-badge {
+      display: inline-block; background: #f8514922; border: 1px solid #f85149;
+      color: #f85149; font-size: 0.62rem; padding: 0 0.3rem; border-radius: 3px;
+      margin-left: 4px; vertical-align: middle;
+    }
   </style>
 </head>
 <body>
@@ -127,10 +138,13 @@
             </div>
             <div class="profile-body">
               ${entries.map(e => `
-                <div class="entry">
-                  <span class="entry-ts">${e.ts.replace("T"," ").slice(0,19)}</span>
-                  <span class="${e.partial ? "badge-partial" : "badge-full"}">${e.partial ? "PARTIAL" : "FULL"}</span>
-                  <span class="entry-url">${escHtml(e.url)}</span>
+                <div class="entry" style="flex-direction:column;align-items:flex-start">
+                  <div style="display:flex;gap:0.75rem;align-items:baseline;width:100%">
+                    <span class="entry-ts">${e.ts.replace("T"," ").slice(0,19)}</span>
+                    <span class="${e.partial ? "badge-partial" : "badge-full"}">${e.partial ? "PARTIAL" : "FULL"}</span>
+                    <span class="entry-url">${escHtml(e.url)}</span>
+                  </div>
+                  ${renderDetail(e.url)}
                 </div>`).join("")}
             </div>
           </div>`;
@@ -145,6 +159,61 @@
 
     function escHtml(s) {
       return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    }
+
+    const TOKEN_PARAMS = new Set([
+      "token","access_token","id_token","refresh_token","code","auth","auth_token",
+      "apikey","api_key","key","secret","session","session_id","sid","jwt","bearer",
+      "authorization","oauth_token","state","nonce","ticket","invite","reset"
+    ]);
+
+    function parseUrlDetails(rawUrl) {
+      let url;
+      try { url = new URL(rawUrl); } catch { return null; }
+      const path     = url.pathname;
+      const fragment = url.hash   ? url.hash.slice(1) : null;
+      const params   = [...url.searchParams.entries()];
+      return { path, params, fragment };
+    }
+
+    function renderDetail(rawUrl) {
+      const d = parseUrlDetails(rawUrl);
+      if (!d) return "";
+      const { path, params, fragment } = d;
+      const rows = [];
+
+      if (path && path !== "/")
+        rows.push(`<div class="detail-row"><span class="detail-key">path</span><span class="detail-val path">${escHtml(path)}</span></div>`);
+
+      for (const [k, v] of params) {
+        const isToken = TOKEN_PARAMS.has(k.toLowerCase());
+        rows.push(`<div class="detail-row">
+          <span class="detail-key">${escHtml(k)}</span>
+          <span class="detail-val">${escHtml(v)}${isToken ? '<span class="token-badge">TOKEN</span>' : ""}</span>
+        </div>`);
+      }
+
+      if (fragment) {
+        // Fragment may itself contain key=value pairs (e.g. implicit OAuth flow)
+        const fragParams = [];
+        try {
+          new URLSearchParams(fragment).forEach((v, k) => fragParams.push([k, v]));
+        } catch {}
+        if (fragParams.length) {
+          for (const [k, v] of fragParams) {
+            const isToken = TOKEN_PARAMS.has(k.toLowerCase());
+            rows.push(`<div class="detail-row">
+              <span class="detail-key">#${escHtml(k)}</span>
+              <span class="detail-val fragment">${escHtml(v)}${isToken ? '<span class="token-badge">TOKEN</span>' : ""}</span>
+            </div>`);
+          }
+        } else {
+          rows.push(`<div class="detail-row"><span class="detail-key">fragment</span><span class="detail-val fragment">${escHtml(fragment)}</span></div>`);
+        }
+      }
+
+      if (!rows.length) return "";
+      return `<div class="url-detail">${rows.join("")}</div>`;
     }
 
     function startAuto() {

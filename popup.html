@@ -71,6 +71,22 @@
     #toggleBtn.running:hover { background: #933030; }
     #toggleBtn.paused  { background: #2e6b3e; color: #c8f0d2; }
     #toggleBtn.paused:hover  { background: #388050; }
+    #batchRow {
+      display: flex; align-items: center; gap: 8px;
+      margin-top: 8px;
+    }
+    #batchToggle {
+      width: auto; cursor: pointer; accent-color: #6dbf7e;
+    }
+    #batchLabel { font-size: 11px; color: #888; cursor: pointer; user-select: none; }
+    .worker-list { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+    .worker-row {
+      background: #1a1a1a; border: 1px solid #333; border-radius: 2px;
+      padding: 4px 7px; font-size: 10px;
+    }
+    .worker-id   { color: #f0c060; margin-right: 6px; }
+    .worker-url  { color: #9dd4ff; word-break: break-all; }
+    .worker-prog { height: 2px; margin-top: 3px; background: #2e6b3e; border-radius: 1px; }
     .divider {
       border: none;
       border-top: 1px solid #333;
@@ -113,6 +129,10 @@
 
   <div class="section">
     <button id="toggleBtn" class="paused">&#9654; Start</button>
+    <div id="batchRow">
+      <input type="checkbox" id="batchToggle" />
+      <label id="batchLabel" for="batchToggle">Batch mode (parallel tabs)</label>
+    </div>
   </div>
 
   <div class="status-box section">
@@ -136,6 +156,7 @@
           <div id="progressBar" style="background:#6dbf7e;height:4px;width:0%;transition:width 0.3s"></div>
         </div>
       </div>
+      <div class="worker-list" id="workerList"></div>
     </div>
   </div>
 

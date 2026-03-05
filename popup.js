@@ -12,6 +12,8 @@ const leakUrl      = document.getElementById("leakUrl");
 const progressBar  = document.getElementById("progressBar");
 const progressWrap = document.getElementById("progressWrap");
 const charCounter  = document.getElementById("charCounter");
+const workerList   = document.getElementById("workerList");
+const batchToggle  = document.getElementById("batchToggle");
 
 let currentlyPaused = true;
 
@@ -54,6 +56,14 @@ resetBtn.addEventListener("click", () => {
     });
 });
 
+// ── Batch mode toggle ──
+chrome.storage.local.get("batchMode", ({ batchMode }) => {
+    batchToggle.checked = !!batchMode;
+});
+batchToggle.addEventListener("change", () => {
+    chrome.storage.local.set({ batchMode: batchToggle.checked });
+});
+
 // ── Start / Pause toggle ──
 toggleBtn.addEventListener("click", () => {
     const newPaused = !currentlyPaused;
@@ -62,8 +72,9 @@ toggleBtn.addEventListener("click", () => {
 });
 
 // ── Live status refresh ──
-const renderStatus = ({ paused, calibrating, tabId, prefix, charPos, maxLen, queueLen } = {}) => {
+const renderStatus = ({ paused, calibrating, tabId, prefix, charPos, maxLen, queueLen, batchMode: bm, workers } = {}) => {
     currentlyPaused = !!paused;
+    batchToggle.checked = !!bm;
 
     if (paused) {
         toggleBtn.textContent = "\u25BA Start";
@@ -72,6 +83,34 @@ const renderStatus = ({ paused, calibrating, tabId, prefix, charPos, maxLen, que
         toggleBtn.textContent = "\u23F8 Pause";
         toggleBtn.className = "running";
     }
+
+    // ── Batch mode: show per-worker rows ──
+    if (bm && workers && workers.length > 0) {
+        statusVal.textContent = `Leaking (${workers.length} parallel)`;
+        statusVal.className   = "status-val active";
+        tabVal.textContent    = workers.map(w => `#${w.tabId}`).join(", ");
+        tabVal.className      = "status-val active";
+        leakUrl.innerHTML     = "";
+        progressWrap.style.display = "none";
+        charCounter.textContent    = "";
+
+        workerList.innerHTML = workers.map(w => {
+            const pct = maxLen > 0 ? Math.min(100, Math.round((w.charPos || 0) / maxLen * 100)) : 0;
+            const text = w.calibrating
+                ? "<span style='color:#f0c060'>calibrating\u2026</span>"
+                : (w.prefix || "") + "<span style='animation:blink 1s step-start infinite;color:#6dbf7e'>&#9646;</span>";
+            return `<div class="worker-row">
+              <span class="worker-id">#${w.tabId}</span>
+              <span class="worker-url">${text}</span>
+              <div class="worker-prog" style="width:${pct}%"></div>
+            </div>`;
+        }).join("");
+        queueVal.textContent = queueLen ?? 0;
+        return;
+    }
+
+    // ── Single-worker / sequential display (unchanged) ──
+    workerList.innerHTML = "";
 
     if (tabId && calibrating) {
         // Calibrating phase
