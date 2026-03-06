@@ -86,19 +86,48 @@ The attack can be made completely silent by running against background tabs, req
 1. The extension sets a dynamic DNR blocking rule with a regex matching a character subset at position *i* of the URL.
 2. `chrome.tabs.reload()` triggers a navigation on the target tab.
 3. A per-probe `chrome.tabs.onUpdated` listener waits for `loading` then `complete`, measuring elapsed time.
-4. If elapsed time < calibrated threshold → URL matches regex → character is in the tested set.
-5. Binary search narrows the character down in ~7 iterations per position.
+   - If elapsed time falls **below** the lower edge of the ambiguous band → immediately classified as **blocked**.
+   - If elapsed time falls **above** the upper edge of the ambiguous band → immediately classified as **allowed** (early exit; no need to wait for the page to finish loading).
+   - If elapsed time falls **within** the band → additional confirmation probes are taken (adaptive voting).
+4. A blocked result means the URL matches the current regex → the tested character set contains the next character.
+5. Binary search narrows the character down in ~7 iterations per position, with double-verification on the final candidate.
 6. The leaked URL is AES-256-GCM encrypted and POSTed to the collection server.
 
 ### Features of this PoC
 
 - **Auto-calibration** — measures real blocked vs. unblocked round-trip times at runtime; adapts to LAN, WAN, and VPN environments
+- **Adaptive voting oracle** — timing samples that fall inside a configurable *ambiguous band* around the threshold trigger additional confirmation probes instead of deciding immediately, reducing false positives caused by network jitter
+- **Early allow-exit** — "allow" probes return as soon as elapsed time exceeds the upper edge of the ambiguous band, eliminating the need to wait for the full page load on non-matching probes and roughly halving per-character time on fast connections
+- **Double-verification** — when binary search narrows to a single candidate character, it is probed twice before being accepted, guarding against a single noisy sample killing the leak
+- **Catch-all null guard** — if character narrowing returns no result, a full-alphabet probe confirms whether more characters actually remain; false nulls caused by timing noise are retried rather than treated as end-of-URL
+- **Periodic recalibration** — after every 20 leaked characters the oracle re-measures blocked/unblocked timing; detects threshold drift caused by bot-detection interstitials loading as fast as a DNR block
+- **Prefix validation with backtrack** — every 15 characters the accumulated prefix is verified against the live URL; on failure the engine recalibrates and trims the last 5 characters before retrying, recovering from corruption due to noise or anti-bot redirects
+- **Inter-probe jitter** — a configurable random delay (default 400–1200 ms) is inserted between reloads to avoid triggering bot-detection rate limits on the target site; disabled by default for maximum speed, can be enabled if the target site rate-limits requests
 - **Background-only operation** — only leaks tabs that are not currently active; skips the foreground tab entirely
 - **Pause / resume** — if a background tab is brought into focus mid-leak, the leak is paused and resumes from the same character position when the tab goes back to background
 - **Partial exfiltration on close** — if a tab is closed before the leak completes, the partial URL is exfiltrated immediately
 - **Multi-tab queue** — all open background tabs are queued and leaked sequentially at startup
 - **IP profiling** — the server groups leaked URLs by client IP, building a browsing profile per user
 - **AES-256-GCM encryption** — all exfiltrated data is encrypted with a pre-shared key before transmission
+- **Configurable popup UI** — all tuning parameters are adjustable live from the extension popup (see [Configuration](#configuration) below) without reloading the extension
+
+---
+
+## Configuration
+
+All settings are accessible from the extension popup via collapsible sections and take effect immediately without restarting the extension.
+
+| Setting | Default | Description |
+|---|---|---|
+| **Max URL Length** | 128 | Maximum number of characters to leak per URL. Increase for long URLs with query strings or tokens. |
+| **Ambiguity Factor** | 0.4 | Width of the uncertain timing band as a fraction of the calibrated threshold. Samples inside `[threshold × (1−f), threshold × (1+f)]` trigger extra confirmation votes. `0` = fastest (single sample, noisiest). `0.4` = ±40% band (recommended). `1.0` = always take all votes (slowest, most robust). |
+| **Jitter (enable/disable)** | Disabled | Toggle all inter-probe delays on or off. |
+| **Jitter Min / Max** | 400 / 1200 ms | Random wait range inserted before each reload. Higher values reduce bot-detection risk; lower values speed up the leak. |
+| **Recalibrate Every** | 20 chars | Re-measure blocked/unblocked timing after this many confirmed characters. Detects oracle drift caused by bot-detection interstitials. Set to `0` to disable. |
+| **Validate Every** | 15 chars | Verify the accumulated prefix still matches the live URL after this many characters. Catches corruption from noise or anti-bot redirects. Set to `0` to disable. |
+| **Backtrack Length** | 5 chars | Number of characters trimmed from the prefix when validation fails, before retrying from that position. |
+| **Null Confirm Rounds** | 3 misses | Number of consecutive positions where no character is found (with no catch-all match) required before the engine accepts end-of-URL. Higher values prevent premature termination at the cost of a few extra probes per URL. |
+| **Exfil Server URL** | `http://localhost:3000` | Collection server endpoint. Connection is tested before saving. |
 
 ---
 
