@@ -153,6 +153,12 @@ No `tabs`, no `host_permissions`, no `webRequest`.
 
 ---
 
+## Demo
+
+https://github.com/user-attachments/assets/cb51d32e-db68-4018-a849-8ed63797ee1b
+
+---
+
 ## Credit
 
 **Vulnerability discovered and reported by:**  
